@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import RecentTokensMarquee from "../components/RecentTokensMarquee";
 
 export default function Landing() {
   const navigate = useNavigate();
@@ -42,12 +43,16 @@ export default function Landing() {
         />
         <button
           onClick={go}
-          className="rounded-xl bg-accent px-6 py-3.5 font-bold text-white transition hover:bg-accent-dark"
+          className="rounded-xl bg-accent px-6 py-3.5 font-bold text-bg transition hover:bg-accent-dark"
         >
           Open token
         </button>
       </div>
       {err && <p className="mt-3 text-danger">{err}</p>}
+
+      <div className="mt-10">
+        <RecentTokensMarquee />
+      </div>
 
       <div className="mt-14 grid gap-4 text-left sm:grid-cols-3">
         {[
@@ -64,7 +69,7 @@ export default function Landing() {
           },
         ].map((s) => (
           <div key={s.n} className="rounded-xl border border-line bg-card p-5">
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-sm font-bold text-white">
+            <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-accent text-sm font-bold text-bg">
               {s.n}
             </span>
             <h3 className="mb-1.5 mt-2.5 font-semibold">{s.t}</h3>
