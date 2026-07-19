@@ -2,8 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply bg-bg text-ink antialiased;
+/*
+ * Theme tokens as raw RGB channels ("R G B") so Tailwind can apply opacity
+ * modifiers via `rgb(var(--token) / <alpha-value>)`. `:root` is the light
+ * theme; `.dark` (toggled on <html>) is the modern SaaS dark theme.
+ */
+:root {
+  --color-bg: 255 255 255;
+  --color-bg-soft: 244 245 247;
+  --color-card: 255 255 255;
+  --color-line: 227 230 234;
+  --color-ink: 10 10 10;
+  --color-ink-dim: 107 114 128;
+  --color-accent: 17 17 17;
+  --color-accent-dark: 51 51 51;
+  --color-danger: 217 45 32;
+  --color-up: 22 163 74;
+  --color-up-soft: 220 252 231;
+  --color-down: 220 38 38;
+  --color-down-soft: 254 226 226;
+  --color-brand: 109 94 252;
+  --color-brand-soft: 238 240 255;
+  color-scheme: light;
 }
 
+.dark {
+  --color-bg: 11 15 20;
+  --color-bg-soft: 20 26 33;
+  --color-card: 18 24 31;
+  --color-line: 38 46 56;
+  --color-ink: 233 236 239;
+  --color-ink-dim: 148 158 171;
+  /* Primary surface inverts to a light chip; paired text uses `text-bg`. */
+  --color-accent: 244 244 245;
+  --color-accent-dark: 212 212 216;
+  --color-danger: 248 113 113;
+  --color-up: 34 197 94;
+  --color-up-soft: 16 44 28;
+  --color-down: 248 113 113;
+  --color-down-soft: 58 24 24;
+  --color-brand: 141 130 255;
+  --color-brand-soft: 33 31 60;
+  color-scheme: dark;
+}
 
+body {
+  @apply bg-bg text-ink antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+@layer components {
+  /* Theme-aware loading shimmer used by <Skeleton />. */
+  .skeleton-shimmer {
+    background-image: linear-gradient(
+      90deg,
+      rgb(var(--color-line)) 8%,
+      rgb(var(--color-bg-soft)) 18%,
+      rgb(var(--color-line)) 33%
+    );
+    background-size: 200% 100%;
+  }
+}
