@@ -1,17 +1,57 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../lib/config";
-import { relTime, shortenAddress, type TokenProfile } from "../lib/types";
+import { relTime, type TokenProfile } from "../lib/types";
+import { fetchMarketPairs, fetchTokenBriefs, type MarketPair, type TokenBrief } from "../lib/market";
+import FeedToolbar, { type FeedViewMode } from "../components/feed/FeedToolbar";
+import FeedCard from "../components/feed/FeedCard";
+import FeedTable from "../components/feed/FeedTable";
+import FeedSkeleton from "../components/feed/FeedSkeleton";
 
 const POLL_MS = 5000;
+const VIEW_STORAGE_KEY = "dux.feed.view";
+
+function loadViewMode(): FeedViewMode {
+  if (typeof window === "undefined") return "cards";
+  return window.localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+}
+
+/** Does a profile match the search query across name, symbol, address, etc.? */
+function matchesQuery(
+  profile: TokenProfile,
+  brief: TokenBrief | undefined,
+  needle: string
+): boolean {
+  const haystack = [
+    brief?.name,
+    brief?.symbol,
+    profile.tokenAddress,
+    profile.description,
+    ...profile.links.map((l) => l.label || l.type),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(needle);
+}
 
 export default function Feed() {
   const [profiles, setProfiles] = useState<TokenProfile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [, forceTick] = useState(0);
+  const [markets, setMarkets] = useState<Record<string, MarketPair | null>>({});
+  const [briefs, setBriefs] = useState<Record<string, TokenBrief>>({});
+  const [query, setQuery] = useState("");
+  const [viewMode, setViewMode] = useState<FeedViewMode>(loadViewMode);
   const known = useRef<Map<string, string>>(new Map());
   const first = useRef(true);
+  const fetchedMarkets = useRef<Set<string>>(new Set());
+  const fetchedBriefs = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     let stop = false;
@@ -39,6 +79,8 @@ export default function Feed() {
         }
       } catch {
         /* transient error, next poll retries */
+      } finally {
+        if (!stop) setLoading(false);
       }
     }
 
@@ -51,6 +93,56 @@ export default function Feed() {
       clearInterval(tick);
     };
   }, []);
+
+  // Lazily pull live market data for the feed in batched requests (up to 30
+  // tokens per Dexscreener call) rather than one request per token, so a full
+  // page of charts resolves in a couple of requests instead of dozens.
+  useEffect(() => {
+    let cancelled = false;
+    const pending = profiles
+      .map((p) => p.tokenAddress)
+      .filter((addr) => !fetchedMarkets.current.has(addr));
+    if (pending.length === 0) return;
+
+    pending.forEach((addr) => fetchedMarkets.current.add(addr));
+    (async () => {
+      const map = await fetchMarketPairs(pending);
+      if (cancelled) return;
+      setMarkets((m) => ({ ...m, ...map }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
+
+  // Enrich profiles with real names / symbols / logos (batched, once per token).
+  // Powers both the search index and the richer card/table labels.
+  useEffect(() => {
+    let cancelled = false;
+    const pending = profiles
+      .map((p) => p.tokenAddress)
+      .filter((addr) => !fetchedBriefs.current.has(addr));
+    if (pending.length === 0) return;
+
+    (async () => {
+      for (let i = 0; i < pending.length; i += 30) {
+        const batch = pending.slice(i, i + 30);
+        batch.forEach((addr) => fetchedBriefs.current.add(addr));
+        const map = await fetchTokenBriefs(batch);
+        if (cancelled) return;
+        setBriefs((prev) => ({ ...prev, ...map }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return profiles;
+    return profiles.filter((p) => matchesQuery(p, briefs[p.tokenAddress], needle));
+  }, [profiles, briefs, query]);
 
   return (
     <div>
@@ -70,58 +162,52 @@ export default function Feed() {
         5&nbsp;seconds.
       </p>
 
-      {profiles.length === 0 && (
+      {profiles.length > 0 && (
+        <FeedToolbar
+          query={query}
+          onQueryChange={setQuery}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          resultCount={filtered.length}
+          totalCount={profiles.length}
+        />
+      )}
+
+      {loading && profiles.length === 0 ? (
+        <FeedSkeleton viewMode={viewMode} />
+      ) : profiles.length === 0 ? (
         <div className="mt-5 rounded-xl border border-line bg-card p-5 text-center text-ink-dim">
           No updates yet. As soon as someone updates their token info, it shows up here.
         </div>
-      )}
-
-      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {profiles.map((p) => (
-          <Link
-            key={p.tokenAddress}
-            to={`/token/${p.tokenAddress}`}
-            className={`overflow-hidden rounded-xl border border-line bg-card transition hover:-translate-y-0.5 hover:border-accent ${
-              fresh.has(p.tokenAddress) ? "animate-flash" : ""
-            }`}
+      ) : filtered.length === 0 ? (
+        <div className="mt-5 rounded-xl border border-line bg-card p-8 text-center">
+          <p className="font-semibold text-ink">No matches for “{query.trim()}”</p>
+          <p className="mt-1 text-sm text-ink-dim">
+            Try a token name, symbol, or address.
+          </p>
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="mt-4 rounded-lg border border-line bg-bg-soft px-3 py-1.5 text-sm font-semibold text-ink transition hover:border-accent"
           >
-            <div className="aspect-[3/1] bg-bg-soft">
-              {p.header && (
-                <img src={p.header} alt="" loading="lazy" className="h-full w-full object-cover" />
-              )}
-            </div>
-            <div className="p-3.5">
-              <div className="flex items-center gap-2">
-                {p.icon && (
-                  <img src={p.icon} alt="" loading="lazy" className="h-7 w-7 rounded-full bg-bg-soft object-cover" />
-                )}
-                <span className="font-mono text-sm font-semibold">{shortenAddress(p.tokenAddress)}</span>
-                {fresh.has(p.tokenAddress) && (
-                  <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-extrabold tracking-wide text-white">
-                    UPDATED
-                  </span>
-                )}
-                <span className="ml-auto text-xs text-ink-dim">{relTime(p.updatedAt)}</span>
-              </div>
-              {p.description && (
-                <p className="mt-2 line-clamp-2 text-[13px] text-ink-dim">{p.description}</p>
-              )}
-              {p.links.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {p.links.map((l, i) => (
-                    <span
-                      key={i}
-                      className="rounded-full border border-line bg-bg-soft px-2.5 py-0.5 text-xs text-ink-dim"
-                    >
-                      {l.label || l.type || "link"}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </Link>
-        ))}
-      </div>
+            Clear search
+          </button>
+        </div>
+      ) : viewMode === "cards" ? (
+        <div className="mt-5 grid animate-fade-in gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((p) => (
+            <FeedCard
+              key={p.tokenAddress}
+              profile={p}
+              market={markets[p.tokenAddress]}
+              brief={briefs[p.tokenAddress]}
+              isFresh={fresh.has(p.tokenAddress)}
+            />
+          ))}
+        </div>
+      ) : (
+        <FeedTable profiles={filtered} markets={markets} briefs={briefs} fresh={fresh} />
+      )}
     </div>
   );
 }
