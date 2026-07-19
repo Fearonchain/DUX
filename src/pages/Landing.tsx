@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import RecentTokensMarquee from "../components/RecentTokensMarquee";
 
 export default function Landing() {
   const navigate = useNavigate();
@@ -48,6 +49,10 @@ export default function Landing() {
         </button>
       </div>
       {err && <p className="mt-3 text-danger">{err}</p>}
+
+      <div className="mt-10">
+        <RecentTokensMarquee />
+      </div>
 
       <div className="mt-14 grid gap-4 text-left sm:grid-cols-3">
         {[
