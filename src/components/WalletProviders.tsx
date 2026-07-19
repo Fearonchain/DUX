@@ -217,7 +217,7 @@ export function WalletButton() {
       <button
         onClick={openPicker}
         disabled={connecting}
-        className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white transition hover:bg-accent-dark disabled:opacity-50"
+        className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-bg transition hover:bg-accent-dark disabled:opacity-50"
       >
         {connecting ? "Connecting…" : "Select Wallet"}
       </button>
@@ -229,7 +229,7 @@ export function WalletButton() {
     <div className="relative">
       <button
         onClick={() => setMenuOpen((o) => !o)}
-        className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white transition hover:bg-accent-dark"
+        className="rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-bg transition hover:bg-accent-dark"
       >
         {short}
       </button>
