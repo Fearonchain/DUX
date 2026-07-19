@@ -31,7 +31,7 @@ A terminal (Axiom / Padre / GMGN) needs exactly two endpoints:
 
 Also available: `GET /token-profiles/latest/v1` and `GET /token-profiles/images/{id}` (banner JPEG). Field names/layout match the Dexscreener token-profiles schema, so an existing Dexscreener parser works as-is. See `INTEGRATION.md`.
 
-## Security model
+## Security model:
 
 - Single-use nonces (5 min TTL), marked used before signature verification: replay- and race-safe.
 - The signed message is reconstructed server-side; the client cannot alter wallet, token, nonce or domain.
