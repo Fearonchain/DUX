@@ -95,7 +95,6 @@ async function fetchDexToken(chainId: string, address: string): Promise<{
   name?: string;
   symbol?: string;
   imageUrl?: string;
-  openGraph?: string;
   priceUsd?: number;
   marketCap?: number;
 } | null> {
@@ -116,7 +115,6 @@ async function fetchDexToken(chainId: string, address: string): Promise<{
       name: typeof base.name === "string" ? base.name : undefined,
       symbol: typeof base.symbol === "string" ? base.symbol : undefined,
       imageUrl: typeof info.imageUrl === "string" ? info.imageUrl : undefined,
-      openGraph: typeof info.openGraph === "string" ? info.openGraph : undefined,
       priceUsd: Number(best.priceUsd),
       marketCap: Number(best.marketCap ?? best.fdv),
     };
@@ -158,7 +156,6 @@ async function buildCard(
 ): Promise<TokenCard> {
   const chainName = CHAIN_NAME[chainId] ?? chainId;
   const apiBase = (process.env.VITE_API_BASE || "").replace(/\/$/, "");
-  const fallbackImage = `${origin}/og.png`;
 
   const [dex, profile] = await Promise.all([
     fetchDexToken(chainId, address),
@@ -181,12 +178,9 @@ async function buildCard(
     (profile?.description && profile.description.trim()) ||
     `${displayName} ${marketLine}. Free enhanced token info on Torch.`;
 
-  // Prefer Dexscreener's dedicated OG card (wide), then token logo / Torch icon,
-  // then the site-wide fallback art.
-  const openGraph = dex?.openGraph;
-  const logo = dex?.imageUrl || profile?.icon || profile?.header;
-  const imageUrl = openGraph || logo || fallbackImage;
-  const card: TokenCard["card"] = openGraph || !logo ? "summary_large_image" : "summary";
+  // Always use our Torch-branded OG image endpoint — never Dexscreener's
+  // pre-rendered card (it bakes in their logo).
+  const imageUrl = `${origin}/api/og?chainId=${encodeURIComponent(chainId)}&address=${encodeURIComponent(address)}`;
 
   return {
     name: displayName,
@@ -196,7 +190,7 @@ async function buildCard(
     address,
     description: description.slice(0, 280),
     imageUrl,
-    card,
+    card: "summary_large_image",
     priceUsd: dex?.priceUsd,
     marketCap: dex?.marketCap,
   };
@@ -228,6 +222,9 @@ function renderHtml(origin: string, path: string, card: TokenCard): string {
   <meta property="og:url" content="${u}" />
   <meta property="og:image" content="${i}" />
   <meta property="og:image:secure_url" content="${i}" />
+  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
   <meta property="og:image:alt" content="${t}" />
 
   <meta name="twitter:card" content="${card.card}" />
