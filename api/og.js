@@ -88,11 +88,24 @@ async function loadRasterDataUrl(url) {
       buf[0] === 0x47; // 'G' — GIF magic
     if (needsConvert) {
       const sharp = (await import("sharp")).default;
-      const jpeg = await sharp(buf, { animated: false }).jpeg({ quality: 85 }).toBuffer();
+      const jpeg = await sharp(buf, { animated: false })
+        .resize({ width: 1200, height: 400, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
       return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
     }
-    const mime = type.split(";")[0] || "image/jpeg";
-    return `data:${mime};base64,${buf.toString("base64")}`;
+    // Still downscale large JPEG/PNG avatars/headers for a smaller final card.
+    try {
+      const sharp = (await import("sharp")).default;
+      const jpeg = await sharp(buf)
+        .resize({ width: 1200, height: 400, fit: "inside", withoutEnlargement: true })
+        .jpeg({ quality: 80 })
+        .toBuffer();
+      return `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+    } catch {
+      const mime = type.split(";")[0] || "image/jpeg";
+      return `data:${mime};base64,${buf.toString("base64")}`;
+    }
   } catch {
     return null;
   }
@@ -400,11 +413,17 @@ export default async function handler(req, res) {
     });
 
     const image = new ImageResponse(tree, { width: 1200, height: 630 });
-    const buffer = Buffer.from(await image.arrayBuffer());
+    const png = Buffer.from(await image.arrayBuffer());
+    // Twitter is picky: failed first fetches get cached, and ~1MB+ PNGs often
+    // fail to render in the composer. Re-encode as a lean JPEG.
+    const sharp = (await import("sharp")).default;
+    const jpeg = await sharp(png).jpeg({ quality: 78, mozjpeg: true }).toBuffer();
+
     res.statusCode = 200;
-    res.setHeader("Content-Type", "image/png");
-    res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=600");
-    res.end(buffer);
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
+    res.setHeader("Content-Length", String(jpeg.length));
+    res.end(jpeg);
   } catch (err) {
     const message = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
     res.statusCode = 500;

@@ -180,7 +180,7 @@ async function buildCard(
 
   // Always use our Torch-branded OG image endpoint — never Dexscreener's
   // pre-rendered card (it bakes in their logo).
-  const imageUrl = `${origin}/api/og?chainId=${encodeURIComponent(chainId)}&address=${encodeURIComponent(address)}`;
+  const imageUrl = `${origin}/api/og?chainId=${encodeURIComponent(chainId)}&address=${encodeURIComponent(address)}&v=2`;
 
   return {
     name: displayName,
@@ -222,12 +222,12 @@ function renderHtml(origin: string, path: string, card: TokenCard): string {
   <meta property="og:url" content="${u}" />
   <meta property="og:image" content="${i}" />
   <meta property="og:image:secure_url" content="${i}" />
-  <meta property="og:image:type" content="image/png" />
+  <meta property="og:image:type" content="image/jpeg" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
   <meta property="og:image:alt" content="${t}" />
 
-  <meta name="twitter:card" content="${card.card}" />
+  <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="${t}" />
   <meta name="twitter:description" content="${d}" />
   <meta name="twitter:image" content="${i}" />
