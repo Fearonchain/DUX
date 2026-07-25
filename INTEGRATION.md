@@ -1,6 +1,6 @@
 # Integration Guide, for trading platforms (Axiom / Padre / GMGN-style)
 
-DUX exposes token profiles in the **same schema as Dexscreener's token-profiles API**. If you already render Dexscreener enhanced token info, integrating this source is a base-URL change plus a fallback.
+Torch exposes token profiles in the **same schema as Dexscreener's token-profiles API**. If you already render Dexscreener enhanced token info, integrating this source is a base-URL change plus a fallback.
 
 ## Endpoints
 
@@ -16,6 +16,18 @@ GET <base>/token-profiles/images/{id}
 - No API key, no auth.
 - CORS: `Access-Control-Allow-Origin: *` (browser-side fetch works).
 - Read endpoints send `Cache-Control: public, max-age=15`.
+
+Machine-readable spec: [`/openapi.json`](https://torch-sable.vercel.app/openapi.json) (OpenAPI 3.1).
+
+## Quick start
+
+```bash
+# single token profile (404 if none)
+curl <base>/token-profiles/solana/So11111111111111111111111111111111111111112
+
+# recently updated profiles (poll ~30s, upsert by tokenAddress)
+curl <base>/token-profiles/recent-updates/v1
+```
 
 ## Response schema
 

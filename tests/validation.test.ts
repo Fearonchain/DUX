@@ -1,9 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
   isValidSolanaAddress,
+  isValidAddressForChain,
+  normalizeAddress,
   linkSchema,
   profileUpdateSchema,
 } from "../supabase/functions/_shared/validation.ts";
+import { isValidEvmAddress } from "../supabase/functions/_shared/chains.ts";
 import {
   computePercent,
   parseUpdateAuthority,
@@ -20,6 +23,35 @@ describe("solana address validation", () => {
     expect(isValidSolanaAddress("")).toBe(false);
     expect(isValidSolanaAddress("hello")).toBe(false);
     expect(isValidSolanaAddress("0x1234567890abcdef1234567890abcdef12345678")).toBe(false);
+  });
+});
+
+describe("evm address validation", () => {
+  it("accepts 0x-prefixed 20-byte addresses", () => {
+    expect(isValidEvmAddress("0x4200000000000000000000000000000000000006")).toBe(true);
+    expect(isValidEvmAddress("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266")).toBe(true);
+  });
+  it("rejects non-evm strings", () => {
+    expect(isValidEvmAddress("")).toBe(false);
+    expect(isValidEvmAddress("0x1234")).toBe(false);
+    expect(isValidEvmAddress("So11111111111111111111111111111111111111112")).toBe(false);
+  });
+});
+
+describe("chain-aware address validation", () => {
+  const sol = "So11111111111111111111111111111111111111112";
+  const evm = "0x4200000000000000000000000000000000000006";
+  it("validates against the chain family", () => {
+    expect(isValidAddressForChain("solana", sol)).toBe(true);
+    expect(isValidAddressForChain("solana", evm)).toBe(false);
+    expect(isValidAddressForChain("base", evm)).toBe(true);
+    expect(isValidAddressForChain("ethereum", sol)).toBe(false);
+  });
+  it("normalizes EVM addresses to lowercase and leaves Solana untouched", () => {
+    expect(normalizeAddress("base", "0xABCDef0000000000000000000000000000000006")).toBe(
+      "0xabcdef0000000000000000000000000000000006"
+    );
+    expect(normalizeAddress("solana", sol)).toBe(sol);
   });
 });
 

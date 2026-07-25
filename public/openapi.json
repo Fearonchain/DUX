@@ -1,0 +1,163 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Torch Token Profiles API",
+    "version": "1.0.0",
+    "description": "Free, open-source, key-less token-info API for Solana and major EVM chains (Ethereum, Base, Arbitrum, BNB Chain, Polygon, Optimism, Avalanche). Response shapes are compatible with the Dexscreener token-profiles schema, so existing integrations can add Torch as a source with a base-URL change plus a fallback. Torch is an independent project, not affiliated with DEX Screener, Inc.",
+    "license": { "name": "MIT" }
+  },
+  "servers": [
+    {
+      "url": "https://pwvvexyylkjnujkcjrpu.supabase.co/functions/v1",
+      "description": "Torch public API"
+    }
+  ],
+  "paths": {
+    "/token-profiles/latest/v1": {
+      "get": {
+        "summary": "Latest token profiles",
+        "description": "The 50 most recently created token profiles.",
+        "operationId": "getLatest",
+        "responses": {
+          "200": {
+            "description": "Array of token profiles (Cache-Control: public, max-age=15).",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/TokenProfile" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/token-profiles/recent-updates/v1": {
+      "get": {
+        "summary": "Recently updated token profiles",
+        "description": "The 50 most recently updated token profiles. Poll (e.g. every 30s) and upsert by tokenAddress.",
+        "operationId": "getRecentUpdates",
+        "responses": {
+          "200": {
+            "description": "Array of token profiles (Cache-Control: public, max-age=15).",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/TokenProfile" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/token-profiles/{chainId}/{tokenAddress}": {
+      "get": {
+        "summary": "Single token profile",
+        "description": "Enhanced info for one token by chain and address. Returns 404 when the token has no profile.",
+        "operationId": "getProfile",
+        "parameters": [
+          {
+            "name": "chainId",
+            "in": "path",
+            "required": true,
+            "description": "Chain the token lives on.",
+            "schema": {
+              "type": "string",
+              "enum": ["solana", "ethereum", "base", "arbitrum", "bsc", "polygon", "optimism", "avalanche"]
+            },
+            "example": "solana"
+          },
+          {
+            "name": "tokenAddress",
+            "in": "path",
+            "required": true,
+            "description": "Token address: base58 mint for Solana, 0x-hex contract for EVM chains.",
+            "schema": { "type": "string" },
+            "example": "So11111111111111111111111111111111111111112"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token profile.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/TokenProfile" } }
+            }
+          },
+          "404": {
+            "description": "No profile for this token.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Error" } }
+            }
+          }
+        }
+      }
+    },
+    "/token-profiles/images/{id}": {
+      "get": {
+        "summary": "Profile image",
+        "description": "Banner or icon image referenced by a profile's header/icon field. Immutable and long-cached.",
+        "operationId": "getImage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Image UUID.",
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Image bytes (Cache-Control: public, max-age=31536000, immutable).",
+            "content": {
+              "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
+              "image/png": { "schema": { "type": "string", "format": "binary" } }
+            }
+          },
+          "404": { "description": "No image with this id." }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "TokenProfile": {
+        "type": "object",
+        "description": "Dexscreener-compatible token profile.",
+        "required": ["url", "chainId", "tokenAddress", "icon", "header", "description", "links", "updatedAt"],
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "Canonical Torch token page." },
+          "chainId": {
+            "type": "string",
+            "enum": ["solana", "ethereum", "base", "arbitrum", "bsc", "polygon", "optimism", "avalanche"]
+          },
+          "tokenAddress": { "type": "string", "description": "Token address: base58 mint for Solana, 0x-hex contract for EVM chains." },
+          "icon": {
+            "type": ["string", "null"],
+            "format": "uri",
+            "description": "Server-derived token icon (from on-chain metadata). Null if unavailable; fall back to your own icon source."
+          },
+          "header": {
+            "type": ["string", "null"],
+            "format": "uri",
+            "description": "Banner image (1500x500 JPEG). Null if none set."
+          },
+          "description": { "type": ["string", "null"], "maxLength": 600 },
+          "links": { "type": "array", "items": { "$ref": "#/components/schemas/Link" } },
+          "updatedAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Link": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "type": { "type": "string", "example": "twitter" },
+          "label": { "type": "string" },
+          "url": { "type": "string", "format": "uri", "description": "Always an https:// URL on a public host." }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" } }
+      }
+    }
+  }
+}

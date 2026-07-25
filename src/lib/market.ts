@@ -1,0 +1,686 @@
+/**
+ * Live market data for a token on any supported chain (Solana + EVM).
+ *
+ * Profiles (banner/description/links) come from the DUX backend. Trading data
+ * — price, liquidity, market cap, buys/sells, candles and recent trades — is
+ * pulled from free, public, key-less sources so any token works out of the box:
+ *
+ *   - Dexscreener token API  → aggregate pair stats (all chains)
+ *   - GeckoTerminal API      → OHLCV candles + individual recent trades (all chains)
+ *   - Jupiter token API      → Solana-only fallback for tokens not yet on a DEX
+ *
+ * Chain selection is driven by the shared registry: Dexscreener and
+ * GeckoTerminal name the same chain differently, so callers pass a Torch
+ * `chainId` and this module resolves the right per-provider slug. Everything
+ * here is read-only and safe to call from the browser.
+ */
+
+import {
+  DEFAULT_CHAIN_ID,
+  chainTypeOf,
+  getChain,
+  SUPPORTED_CHAINS,
+} from "./chains";
+
+const DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex";
+const GECKOTERMINAL_BASE = "https://api.geckoterminal.com/api/v2";
+const JUPITER_TOKEN_BASE = "https://lite-api.jup.ag/tokens/v2";
+
+/** Dexscreener chain slug for a Torch chain id (defaults to Solana's). */
+function dexSlugFor(chainId: string): string {
+  return getChain(chainId)?.dexscreenerSlug ?? "solana";
+}
+
+/** GeckoTerminal network slug for a Torch chain id (defaults to Solana's). */
+function geckoSlugFor(chainId: string): string {
+  return getChain(chainId)?.geckoterminalSlug ?? "solana";
+}
+
+/** Reverse-map a Dexscreener chain slug back to a Torch chain id. */
+function chainIdFromDexSlug(slug: string): string | null {
+  return SUPPORTED_CHAINS.find((chain) => chain.dexscreenerSlug === slug)?.id ?? null;
+}
+
+export interface TxnBuckets {
+  buys: number;
+  sells: number;
+}
+
+export interface MarketPair {
+  pairAddress: string;
+  dexId: string;
+  url: string;
+  baseSymbol: string;
+  baseName: string;
+  quoteSymbol: string;
+  imageUrl: string | null;
+  priceUsd: number;
+  priceNative: number;
+  priceChange: { m5: number; h1: number; h6: number; h24: number };
+  txns: { m5: TxnBuckets; h1: TxnBuckets; h6: TxnBuckets; h24: TxnBuckets };
+  volume: { m5: number; h1: number; h6: number; h24: number };
+  liquidityUsd: number;
+  fdv: number;
+  marketCap: number;
+  pairCreatedAt: number | null;
+}
+
+export interface Trade {
+  id: string;
+  kind: "buy" | "sell";
+  amountUsd: number;
+  baseAmount: number;
+  quoteAmount: number;
+  priceUsd: number;
+  wallet: string;
+  txHash: string;
+  timestamp: number; // unix seconds
+}
+
+function toNumber(value: unknown): number {
+  const n = typeof value === "string" ? parseFloat(value) : (value as number);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** Dexscreener accepts up to 30 comma-separated token addresses per request. */
+const DEXSCREENER_BATCH_SIZE = 30;
+
+/** Shape a raw Dexscreener pair row into our typed MarketPair. */
+function mapDexscreenerPair(raw: any): MarketPair {
+  return {
+    pairAddress: raw.pairAddress,
+    dexId: raw.dexId ?? "",
+    url: raw.url ?? "",
+    baseSymbol: raw.baseToken?.symbol ?? "TOKEN",
+    baseName: raw.baseToken?.name ?? "Unknown token",
+    quoteSymbol: raw.quoteToken?.symbol ?? "SOL",
+    imageUrl: raw.info?.imageUrl ?? null,
+    priceUsd: toNumber(raw.priceUsd),
+    priceNative: toNumber(raw.priceNative),
+    priceChange: {
+      m5: toNumber(raw.priceChange?.m5),
+      h1: toNumber(raw.priceChange?.h1),
+      h6: toNumber(raw.priceChange?.h6),
+      h24: toNumber(raw.priceChange?.h24),
+    },
+    txns: {
+      m5: { buys: toNumber(raw.txns?.m5?.buys), sells: toNumber(raw.txns?.m5?.sells) },
+      h1: { buys: toNumber(raw.txns?.h1?.buys), sells: toNumber(raw.txns?.h1?.sells) },
+      h6: { buys: toNumber(raw.txns?.h6?.buys), sells: toNumber(raw.txns?.h6?.sells) },
+      h24: { buys: toNumber(raw.txns?.h24?.buys), sells: toNumber(raw.txns?.h24?.sells) },
+    },
+    volume: {
+      m5: toNumber(raw.volume?.m5),
+      h1: toNumber(raw.volume?.h1),
+      h6: toNumber(raw.volume?.h6),
+      h24: toNumber(raw.volume?.h24),
+    },
+    liquidityUsd: toNumber(raw.liquidity?.usd),
+    fdv: toNumber(raw.fdv),
+    marketCap: toNumber(raw.marketCap),
+    pairCreatedAt: raw.pairCreatedAt ? Number(raw.pairCreatedAt) : null,
+  };
+}
+
+/** Pick the deepest (most liquid) pair for a given Dexscreener chain slug. */
+function deepestPairForChain(pairs: any[], dexSlug: string): any | null {
+  const chainPairs = pairs.filter((p) => p?.chainId === dexSlug);
+  if (chainPairs.length === 0) return null;
+  return chainPairs.reduce((a, b) =>
+    toNumber(b?.liquidity?.usd) > toNumber(a?.liquidity?.usd) ? b : a
+  );
+}
+
+/** Fetch the deepest (most liquid) pair for a token on a chain from Dexscreener. */
+export async function fetchMarketPair(
+  tokenAddress: string,
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<MarketPair | null> {
+  const res = await fetch(`${DEXSCREENER_BASE}/tokens/${tokenAddress}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  const body = await res.json();
+  const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+  const best = deepestPairForChain(pairs, dexSlugFor(chainId));
+  return best ? mapDexscreenerPair(best) : null;
+}
+
+/**
+ * Fetch the deepest Solana pair for many tokens at once.
+ *
+ * Dexscreener's `/tokens/{a,b,c,...}` endpoint returns pairs for up to 30
+ * addresses per request, so the whole feed resolves in a handful of batched
+ * requests instead of one request per token. This keeps the live feed from
+ * hammering the API (and tripping its rate limit) when many charts are on
+ * screen at once. Tokens with no Solana pair are returned as `null` so callers
+ * can distinguish "checked, none found" from "not fetched yet".
+ */
+export async function fetchMarketPairs(
+  addresses: string[],
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<Record<string, MarketPair | null>> {
+  const unique = [...new Set(addresses)];
+  const marketByAddress: Record<string, MarketPair | null> = {};
+  for (const address of unique) marketByAddress[address] = null;
+  if (unique.length === 0) return marketByAddress;
+
+  const dexSlug = dexSlugFor(chainId);
+  const batches: string[][] = [];
+  for (let i = 0; i < unique.length; i += DEXSCREENER_BATCH_SIZE) {
+    batches.push(unique.slice(i, i + DEXSCREENER_BATCH_SIZE));
+  }
+
+  await Promise.all(
+    batches.map(async (batch) => {
+      try {
+        const res = await fetch(`${DEXSCREENER_BASE}/tokens/${batch.join(",")}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const body = await res.json();
+        const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+
+        // Group every returned pair under the base token it belongs to.
+        const pairsByAddress: Record<string, any[]> = {};
+        for (const pair of pairs) {
+          const address = pair?.baseToken?.address as string | undefined;
+          if (!address) continue;
+          (pairsByAddress[address] ??= []).push(pair);
+        }
+
+        for (const address of batch) {
+          const best = deepestPairForChain(pairsByAddress[address] ?? [], dexSlug);
+          if (best) marketByAddress[address] = mapDexscreenerPair(best);
+        }
+      } catch {
+        /* transient error — these tokens simply stay null this pass */
+      }
+    })
+  );
+
+  return marketByAddress;
+}
+
+/**
+ * Build a best-effort MarketPair from Jupiter token data for tokens that
+ * Dexscreener has not indexed yet (typically pump.fun tokens still on the
+ * bonding curve). Jupiter exposes live price, market cap, liquidity and per-
+ * window price changes, which is everything the watchlist and price alerts
+ * need. Fields that only make sense for a concrete DEX pair (pairAddress,
+ * trades, per-window volume) are left empty/zeroed.
+ */
+async function fetchJupiterMarkets(
+  addresses: string[]
+): Promise<Record<string, MarketPair | null>> {
+  const unique = [...new Set(addresses)];
+  const marketByAddress: Record<string, MarketPair | null> = {};
+  for (const address of unique) marketByAddress[address] = null;
+  if (unique.length === 0) return marketByAddress;
+
+  const batches: string[][] = [];
+  for (let i = 0; i < unique.length; i += 30) batches.push(unique.slice(i, i + 30));
+
+  await Promise.all(
+    batches.map(async (batch) => {
+      try {
+        const res = await fetch(`${JUPITER_TOKEN_BASE}/search?query=${batch.join(",")}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const rows: any[] = await res.json();
+        if (!Array.isArray(rows)) return;
+
+        for (const row of rows) {
+          const address = row?.id as string | undefined;
+          if (!address || !batch.includes(address)) continue;
+          const priceUsd = toNumber(row.usdPrice);
+          if (priceUsd <= 0) continue;
+          marketByAddress[address] = {
+            pairAddress: "",
+            dexId: "jupiter",
+            url: "",
+            baseSymbol: row.symbol ?? "TOKEN",
+            baseName: row.name ?? "Unknown token",
+            quoteSymbol: "SOL",
+            imageUrl: typeof row.icon === "string" && row.icon ? row.icon : null,
+            priceUsd,
+            priceNative: 0,
+            priceChange: {
+              m5: toNumber(row.stats5m?.priceChange),
+              h1: toNumber(row.stats1h?.priceChange),
+              h6: toNumber(row.stats6h?.priceChange),
+              h24: toNumber(row.stats24h?.priceChange),
+            },
+            txns: {
+              m5: { buys: 0, sells: 0 },
+              h1: { buys: 0, sells: 0 },
+              h6: { buys: 0, sells: 0 },
+              h24: { buys: 0, sells: 0 },
+            },
+            volume: { m5: 0, h1: 0, h6: 0, h24: 0 },
+            liquidityUsd: toNumber(row.liquidity),
+            fdv: toNumber(row.fdv),
+            marketCap: toNumber(row.mcap),
+            pairCreatedAt: null,
+          };
+        }
+      } catch {
+        /* transient error — these tokens simply stay null */
+      }
+    })
+  );
+
+  return marketByAddress;
+}
+
+/**
+ * Like {@link fetchMarketPairs}, but falls back to Jupiter for any token
+ * Dexscreener has no pair for. Use this where a token may not be listed on a
+ * DEX yet (e.g. the watchlist and price-alert monitor) so those tokens still
+ * show a live price and market cap.
+ */
+export async function fetchMarketPairsResilient(
+  addresses: string[],
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<Record<string, MarketPair | null>> {
+  const dexMarkets = await fetchMarketPairs(addresses, chainId);
+  // Jupiter only covers Solana; other chains rely on Dexscreener alone.
+  if (chainTypeOf(chainId) !== "solana") return dexMarkets;
+
+  const missing = Object.keys(dexMarkets).filter((address) => dexMarkets[address] == null);
+  if (missing.length === 0) return dexMarkets;
+
+  const jupiterMarkets = await fetchJupiterMarkets(missing);
+  const merged = { ...dexMarkets };
+  for (const [address, pair] of Object.entries(jupiterMarkets)) {
+    if (pair) merged[address] = pair;
+  }
+  return merged;
+}
+
+/**
+ * Resolve which supported chain a raw token address trades on by asking
+ * Dexscreener for all its pairs and picking the chain with the deepest
+ * liquidity. Used by the "Add your token" flow where a user may paste a bare
+ * address without knowing (or specifying) its chain. Returns the default chain
+ * when nothing conclusive is found.
+ */
+export async function resolveTokenAcrossChains(
+  tokenAddress: string
+): Promise<{ chainId: string; pair: MarketPair | null }> {
+  try {
+    const res = await fetch(`${DEXSCREENER_BASE}/tokens/${tokenAddress}`, { cache: "no-store" });
+    if (res.ok) {
+      const body = await res.json();
+      const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+      let best: any | null = null;
+      for (const pair of pairs) {
+        if (!chainIdFromDexSlug(pair?.chainId)) continue;
+        if (!best || toNumber(pair?.liquidity?.usd) > toNumber(best?.liquidity?.usd)) best = pair;
+      }
+      if (best) {
+        const resolved = chainIdFromDexSlug(best.chainId) ?? DEFAULT_CHAIN_ID;
+        return { chainId: resolved, pair: mapDexscreenerPair(best) };
+      }
+    }
+  } catch {
+    /* fall through to default */
+  }
+  return { chainId: DEFAULT_CHAIN_ID, pair: null };
+}
+
+/** A single token surfaced by the platform-wide command-palette search. */
+export interface TokenSearchResult {
+  address: string;
+  /** Torch chain id the result belongs to. */
+  chainId: string;
+  name: string;
+  symbol: string;
+  imageUrl: string | null;
+  priceUsd: number;
+  priceChange24h: number;
+  liquidityUsd: number;
+  marketCap: number;
+}
+
+/**
+ * Search tokens by name, symbol or address for the global command palette.
+ * Backed by Dexscreener's public, key-less `/search` endpoint, which matches
+ * against token identity across every chain and returns matching pairs.
+ *
+ * A token can trade in many pairs, so we collapse every returned pair down to
+ * one row per (chain, base-token address), keeping the deepest (most liquid)
+ * pair as the canonical price/identity, then rank by liquidity so the most
+ * relevant, tradeable results float to the top. Pass `chainId` to restrict the
+ * results to a single chain; omit it to search across all supported chains.
+ */
+export async function searchTokens(
+  query: string,
+  chainId?: string
+): Promise<TokenSearchResult[]> {
+  const trimmed = query.trim();
+  if (trimmed.length < 2) return [];
+
+  let body: any;
+  try {
+    const res = await fetch(`${DEXSCREENER_BASE}/search?q=${encodeURIComponent(trimmed)}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    body = await res.json();
+  } catch {
+    return [];
+  }
+
+  const wantSlug = chainId ? dexSlugFor(chainId) : null;
+  const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+  // Key by chain + address so the same address on two chains stays distinct.
+  const bestByKey = new Map<string, { pair: any; resolvedChainId: string }>();
+  for (const pair of pairs) {
+    const resolvedChainId = chainIdFromDexSlug(pair?.chainId);
+    if (!resolvedChainId) continue; // unsupported chain
+    if (wantSlug && pair?.chainId !== wantSlug) continue;
+    const address = pair?.baseToken?.address as string | undefined;
+    if (!address) continue;
+    const key = `${resolvedChainId}:${address}`;
+    const current = bestByKey.get(key);
+    if (!current || toNumber(pair?.liquidity?.usd) > toNumber(current.pair?.liquidity?.usd)) {
+      bestByKey.set(key, { pair, resolvedChainId });
+    }
+  }
+
+  return [...bestByKey.values()]
+    .map(({ pair, resolvedChainId }) => ({
+      address: pair.baseToken.address as string,
+      chainId: resolvedChainId,
+      name: pair.baseToken?.name ?? "",
+      symbol: pair.baseToken?.symbol ?? "",
+      imageUrl: pair.info?.imageUrl ?? null,
+      priceUsd: toNumber(pair.priceUsd),
+      priceChange24h: toNumber(pair.priceChange?.h24),
+      liquidityUsd: toNumber(pair.liquidity?.usd),
+      marketCap: toNumber(pair.marketCap),
+    }))
+    .sort((a, b) => b.liquidityUsd - a.liquidityUsd);
+}
+
+export interface TokenBrief {
+  name: string;
+  symbol: string;
+  imageUrl: string | null;
+}
+
+/**
+ * Fetch name / symbol / icon for many tokens in a single pass. Used by the
+ * "just added" marquee and the live feed so they can show real names and logos
+ * instead of raw addresses.
+ *
+ * Both sources are public, key-less and CORS-enabled (so they work directly
+ * from the browser):
+ *
+ *   - Jupiter token API → on-chain token metadata, including the logo (`icon`);
+ *     the widest, freshest coverage for Solana tokens (incl. pump.fun launches)
+ *   - Dexscreener       → most-liquid-pair name/symbol, used as a fallback
+ *
+ * Jupiter supplies the logo and identity; Dexscreener backfills any token
+ * Jupiter has not indexed yet.
+ */
+export async function fetchTokenBriefs(
+  addresses: string[],
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<Record<string, TokenBrief>> {
+  const unique = [...new Set(addresses)].slice(0, 30);
+  if (unique.length === 0) return {};
+
+  // Jupiter only indexes Solana; other chains use Dexscreener alone.
+  const [jupiterBriefs, dexBriefs] = await Promise.all([
+    chainTypeOf(chainId) === "solana"
+      ? fetchJupiterBriefs(unique)
+      : Promise.resolve<Record<string, TokenBrief>>({}),
+    fetchDexscreenerBriefs(unique, chainId),
+  ]);
+
+  const merged: Record<string, TokenBrief> = {};
+  for (const address of unique) {
+    const jup = jupiterBriefs[address];
+    const dex = dexBriefs[address];
+    if (!jup && !dex) continue;
+    merged[address] = {
+      name: jup?.name || dex?.name || "",
+      symbol: jup?.symbol || dex?.symbol || "",
+      // Prefer Jupiter's on-chain logo; fall back to a Dexscreener pair logo.
+      imageUrl: jup?.imageUrl ?? dex?.imageUrl ?? null,
+    };
+  }
+  return merged;
+}
+
+/** Token metadata (incl. logo) per token from Jupiter's token search API. */
+async function fetchJupiterBriefs(
+  addresses: string[]
+): Promise<Record<string, TokenBrief>> {
+  try {
+    const res = await fetch(`${JUPITER_TOKEN_BASE}/search?query=${addresses.join(",")}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return {};
+    const body = await res.json();
+    const rows: any[] = Array.isArray(body) ? body : [];
+
+    const briefsByAddress: Record<string, TokenBrief> = {};
+    for (const row of rows) {
+      const address = row?.id as string | undefined;
+      if (!address) continue;
+      briefsByAddress[address] = {
+        name: row.name ?? "",
+        symbol: row.symbol ?? "",
+        imageUrl: typeof row.icon === "string" && row.icon ? row.icon : null,
+      };
+    }
+    return briefsByAddress;
+  } catch {
+    return {};
+  }
+}
+
+/** Most-liquid-pair metadata per token from Dexscreener (one batch request). */
+async function fetchDexscreenerBriefs(
+  addresses: string[],
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<Record<string, TokenBrief>> {
+  const dexSlug = dexSlugFor(chainId);
+  try {
+    const res = await fetch(`${DEXSCREENER_BASE}/tokens/${addresses.join(",")}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return {};
+    const body = await res.json();
+    const pairs: any[] = Array.isArray(body?.pairs) ? body.pairs : [];
+
+    const bestByAddress: Record<string, { brief: TokenBrief; liquidity: number }> = {};
+    for (const pair of pairs) {
+      if (pair?.chainId !== dexSlug) continue;
+      const address = pair?.baseToken?.address as string | undefined;
+      if (!address) continue;
+      const liquidity = toNumber(pair?.liquidity?.usd);
+      const current = bestByAddress[address];
+      if (!current || liquidity > current.liquidity) {
+        bestByAddress[address] = {
+          liquidity,
+          brief: {
+            name: pair.baseToken?.name ?? "",
+            symbol: pair.baseToken?.symbol ?? "",
+            imageUrl: pair.info?.imageUrl ?? null,
+          },
+        };
+      }
+    }
+
+    const briefsByAddress: Record<string, TokenBrief> = {};
+    for (const [address, value] of Object.entries(bestByAddress)) {
+      briefsByAddress[address] = value.brief;
+    }
+    return briefsByAddress;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Reconstruct a lightweight price trend for a sparkline using only the data
+ * Dexscreener already returns (one request per token, no extra API calls).
+ * Each priceChange bucket is the trailing % move ending "now", so we can walk
+ * backwards to approximate the price at each checkpoint.
+ */
+export function sparkPointsFromPair(pair: MarketPair): number[] {
+  const now = pair.priceUsd;
+  const { h24, h6, h1, m5 } = pair.priceChange;
+  const at = (changePct: number) => now / (1 + changePct / 100);
+  return [at(h24), at(h6), at(h1), at(m5), now].filter(
+    (n) => Number.isFinite(n) && n > 0
+  );
+}
+
+/** Fetch the most recent individual trades for a pool on a given chain. */
+export async function fetchTrades(
+  pairAddress: string,
+  chainId: string = DEFAULT_CHAIN_ID
+): Promise<Trade[]> {
+  const url = `${GECKOTERMINAL_BASE}/networks/${geckoSlugFor(chainId)}/pools/${pairAddress}/trades`;
+  const res = await fetch(url, {
+    cache: "no-store",
+    headers: { Accept: "application/json;version=20230302" },
+  });
+  if (!res.ok) return [];
+  const body = await res.json();
+  const rows: any[] = Array.isArray(body?.data) ? body.data : [];
+
+  return rows.map((row) => {
+    const a = row.attributes ?? {};
+    const kind: "buy" | "sell" = a.kind === "sell" ? "sell" : "buy";
+    return {
+      id: String(row.id ?? a.tx_hash ?? Math.random()),
+      kind,
+      amountUsd: toNumber(a.volume_in_usd),
+      baseAmount: toNumber(kind === "buy" ? a.to_token_amount : a.from_token_amount),
+      quoteAmount: toNumber(kind === "buy" ? a.from_token_amount : a.to_token_amount),
+      priceUsd: toNumber(kind === "buy" ? a.price_to_in_usd : a.price_from_in_usd),
+      wallet: a.tx_from_address ?? "",
+      txHash: a.tx_hash ?? "",
+      timestamp: a.block_timestamp ? Math.floor(new Date(a.block_timestamp).getTime() / 1000) : 0,
+    };
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Formatting helpers — small, dependency-free, shared across the dashboard.
+ * ------------------------------------------------------------------------- */
+
+const SUBSCRIPTS = ["₀", "₁", "₂", "₃", "₄", "₅", "₆", "₇", "₈", "₉"];
+
+function toSubscript(n: number): string {
+  return String(n)
+    .split("")
+    .map((d) => SUBSCRIPTS[Number(d)] ?? d)
+    .join("");
+}
+
+/**
+ * Format a USD price the way trading terminals do. Tiny prices collapse their
+ * leading zeros into a subscript count, e.g. 0.0000567 → "$0.0₄567".
+ */
+export function formatPriceUsd(price: number): string {
+  if (!Number.isFinite(price) || price <= 0) return "$0.00";
+  if (price >= 1) return `$${price.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+  if (price >= 0.001) return `$${price.toFixed(4)}`;
+
+  const decimals = price.toExponential().split("e-")[1];
+  const leadingZeros = Number(decimals) - 1;
+  const significant = Math.round(price * 10 ** (leadingZeros + 4))
+    .toString()
+    .replace(/0+$/, "")
+    .padStart(1, "0");
+  return `$0.0${toSubscript(leadingZeros)}${significant}`;
+}
+
+/** Compact money: 1_234_567 → "$1.23M". */
+export function formatUsdCompact(value: number): string {
+  if (!Number.isFinite(value)) return "$0";
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `$${(value / 1e3).toFixed(1)}K`;
+  return `$${value.toFixed(2)}`;
+}
+
+/** Compact plain number: 1_234_567 → "1.23M". */
+export function formatCompact(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(value / 1e3).toFixed(2)}K`;
+  return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+/** A shorthand magnitude suffix used by the compact number helpers. */
+export type CompactUnit = "" | "K" | "M" | "B";
+
+/** How much a compact unit suffix multiplies its base number by. */
+export function compactUnitMultiplier(unit: CompactUnit): number {
+  switch (unit) {
+    case "K":
+      return 1e3;
+    case "M":
+      return 1e6;
+    case "B":
+      return 1e9;
+    default:
+      return 1;
+  }
+}
+
+/**
+ * Parse human shorthand for large numbers into a plain number.
+ * Accepts things like "693.22m", "1.5B", "12k", "1,234,567" and "500000".
+ * Returns NaN when the text is empty or unparseable.
+ */
+export function parseCompactNumber(text: string): number {
+  const cleaned = text.trim().replace(/[$,\s]/g, "");
+  if (!cleaned) return Number.NaN;
+  const match = cleaned.match(/^(-?\d*\.?\d+)([kmb])?$/i);
+  if (!match) return Number.NaN;
+  const base = Number.parseFloat(match[1]);
+  const unit = (match[2]?.toUpperCase() ?? "") as CompactUnit;
+  return base * compactUnitMultiplier(unit);
+}
+
+/**
+ * Split a number into a compact mantissa + unit for editing, e.g.
+ * 693_220_000 → { mantissa: "693.22", unit: "M" }. Trailing zeros are trimmed
+ * so the value round-trips as cleanly as possible in an input field.
+ */
+export function splitCompact(value: number): { mantissa: string; unit: CompactUnit } {
+  if (!Number.isFinite(value) || value <= 0) return { mantissa: "", unit: "" };
+  const abs = Math.abs(value);
+  const unit: CompactUnit = abs >= 1e9 ? "B" : abs >= 1e6 ? "M" : abs >= 1e3 ? "K" : "";
+  const mantissa = value / compactUnitMultiplier(unit);
+  const rounded = Number(mantissa.toFixed(2)).toString();
+  return { mantissa: rounded, unit };
+}
+
+/** Signed percentage: 12.34 → "+12.34%". */
+export function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0.00%";
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+export function relTimeShort(timestampSeconds: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - timestampSeconds));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}

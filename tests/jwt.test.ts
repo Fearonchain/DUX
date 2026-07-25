@@ -8,6 +8,7 @@ beforeAll(() => {
 describe("edit token JWT", () => {
   const grant = {
     wallet: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    chainId: "solana",
     tokenAddress: "So11111111111111111111111111111111111111112",
     role: "holder" as const,
   };
@@ -15,6 +16,17 @@ describe("edit token JWT", () => {
   it("round-trips a grant", async () => {
     const token = await issueEditToken(grant);
     expect(await verifyEditToken(`Bearer ${token}`)).toEqual(grant);
+  });
+
+  it("round-trips an EVM grant", async () => {
+    const evmGrant = {
+      wallet: "0x1111111111111111111111111111111111111111",
+      chainId: "base",
+      tokenAddress: "0x4200000000000000000000000000000000000006",
+      role: "authority" as const,
+    };
+    const token = await issueEditToken(evmGrant);
+    expect(await verifyEditToken(`Bearer ${token}`)).toEqual(evmGrant);
   });
 
   it("rejects tampered tokens", async () => {

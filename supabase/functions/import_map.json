@@ -6,6 +6,7 @@
     "jose": "npm:jose@^6.0.0",
     "postgres": "npm:postgres@^3.4.0",
     "@solana/web3.js": "npm:@solana/web3.js@^1.98.0",
+    "viem": "npm:viem@^2.21.0",
     "jpeg-js": "npm:jpeg-js@^0.4.4",
     "upng-js": "npm:upng-js@^2.1.0"
   }

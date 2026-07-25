@@ -1,6 +1,6 @@
 # Deployment
 
-DUX is a Vite/React frontend plus three Supabase Edge Functions and a Postgres schema. The frontend runs on any static host (Vercel, Netlify, Cloudflare Pages, or any platform that builds Vite apps); the backend runs on any Supabase project (free tier is fine).
+Torch is a Vite/React frontend plus three Supabase Edge Functions and a Postgres schema. The frontend runs on any static host (Vercel, Netlify, Cloudflare Pages, or any platform that builds Vite apps); the backend runs on any Supabase project (free tier is fine).
 
 ## Prerequisites
 
@@ -22,6 +22,13 @@ In Supabase, under **Edge Functions -> Secrets**, set:
 | `SOLANA_RPC_URL` | e.g. `https://mainnet.helius-rpc.com/?api-key=<key>` |
 | `FRONTEND_URL` | public URL of your frontend (used in API responses) |
 | `HOLDER_THRESHOLD_PERCENT` | optional, default `3` |
+| `ETHEREUM_RPC_URL` | optional EVM RPC override; a keyless public default is used if unset |
+| `BASE_RPC_URL` | optional EVM RPC override |
+| `ARBITRUM_RPC_URL` | optional EVM RPC override |
+| `BSC_RPC_URL` | optional EVM RPC override |
+| `POLYGON_RPC_URL` | optional EVM RPC override |
+| `OPTIMISM_RPC_URL` | optional EVM RPC override |
+| `AVALANCHE_RPC_URL` | optional EVM RPC override |
 
 ## 3. Deploy the functions
 
@@ -42,7 +49,8 @@ Set the env vars (in your host's dashboard or a local `.env`, see `.env.example`
 
 ```
 VITE_API_BASE=https://<your-ref>.supabase.co/functions/v1
-VITE_SOLANA_RPC_URL=            # optional, wallet-adapter only
+VITE_REOWN_PROJECT_ID=         # Reown project id (unified EVM + Solana wallet modal)
+VITE_SOLANA_RPC_URL=           # optional, Solana wallet-adapter only
 ```
 
 Then build and deploy:

@@ -1,17 +1,87 @@
-import { useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../lib/config";
-import { relTime, shortenAddress, type TokenProfile } from "../lib/types";
+import { relTime, type TokenProfile } from "../lib/types";
+import { fetchMarketPairs, fetchTokenBriefs, type MarketPair, type TokenBrief } from "../lib/market";
+import FeedToolbar from "../components/feed/FeedToolbar";
+import FeedSkeleton from "../components/feed/FeedSkeleton";
+import TokenCard from "../components/token/TokenCard";
+import TokenList from "../components/token/TokenList";
+import { type TokenViewMode } from "../components/token/TokenViewToggle";
+import { type TokenViewItem } from "../components/token/tokenView";
 
 const POLL_MS = 5000;
+const VIEW_STORAGE_KEY = "dux.feed.view";
+
+function loadViewMode(): TokenViewMode {
+  if (typeof window === "undefined") return "cards";
+  return window.localStorage.getItem(VIEW_STORAGE_KEY) === "table" ? "table" : "cards";
+}
+
+/** Stable per-token key, distinct across chains that share an address. */
+function profileKey(profile: TokenProfile): string {
+  return `${profile.chainId}:${profile.tokenAddress}`;
+}
+
+/** Normalize a profile + its live data into the shared token-view shape. */
+function toTokenViewItem(
+  profile: TokenProfile,
+  market: MarketPair | null | undefined,
+  brief: TokenBrief | undefined,
+  isFresh: boolean
+): TokenViewItem {
+  return {
+    address: profile.tokenAddress,
+    chainId: profile.chainId,
+    market,
+    brief,
+    headerImageUrl: profile.header,
+    iconFallback: profile.icon,
+    description: profile.description,
+    list_of_links: profile.links,
+    updatedAt: profile.updatedAt,
+    isFresh,
+  };
+}
+
+/** Does a profile match the search query across name, symbol, address, etc.? */
+function matchesQuery(
+  profile: TokenProfile,
+  brief: TokenBrief | undefined,
+  needle: string
+): boolean {
+  const haystack = [
+    brief?.name,
+    brief?.symbol,
+    profile.tokenAddress,
+    profile.description,
+    ...profile.links.map((l) => l.label || l.type),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(needle);
+}
 
 export default function Feed() {
   const [profiles, setProfiles] = useState<TokenProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [lastFetch, setLastFetch] = useState<Date | null>(null);
   const [fresh, setFresh] = useState<Set<string>>(new Set());
   const [, forceTick] = useState(0);
+  const [markets, setMarkets] = useState<Record<string, MarketPair | null>>({});
+  const [briefs, setBriefs] = useState<Record<string, TokenBrief>>({});
+  const [query, setQuery] = useState("");
+  const [viewMode, setViewMode] = useState<TokenViewMode>(loadViewMode);
   const known = useRef<Map<string, string>>(new Map());
   const first = useRef(true);
+  const fetchedMarkets = useRef<Set<string>>(new Set());
+  const fetchedBriefs = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    window.localStorage.setItem(VIEW_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   useEffect(() => {
     let stop = false;
@@ -19,17 +89,22 @@ export default function Feed() {
     async function poll() {
       try {
         const res = await fetch(`${API_BASE}/token-profiles/recent-updates/v1`, { cache: "no-store" });
-        if (!res.ok || stop) return;
+        if (stop) return;
+        if (!res.ok) {
+          setError(true);
+          return;
+        }
         const data: TokenProfile[] = await res.json();
+        setError(false);
 
         const changed = new Set<string>();
         if (!first.current) {
           for (const p of data) {
-            if (known.current.get(p.tokenAddress) !== p.updatedAt) changed.add(p.tokenAddress);
+            if (known.current.get(profileKey(p)) !== p.updatedAt) changed.add(profileKey(p));
           }
         }
         first.current = false;
-        known.current = new Map(data.map((p) => [p.tokenAddress, p.updatedAt]));
+        known.current = new Map(data.map((p) => [profileKey(p), p.updatedAt]));
 
         setProfiles(data);
         setLastFetch(new Date());
@@ -38,7 +113,9 @@ export default function Feed() {
           setTimeout(() => setFresh(new Set()), 4000);
         }
       } catch {
-        /* transient error, next poll retries */
+        if (!stop) setError(true);
+      } finally {
+        if (!stop) setLoading(false);
       }
     }
 
@@ -50,7 +127,84 @@ export default function Feed() {
       clearInterval(iv);
       clearInterval(tick);
     };
-  }, []);
+  }, [retry]);
+
+  // Lazily pull live market data for the feed in batched requests (up to 30
+  // tokens per Dexscreener call) rather than one request per token, so a full
+  // page of charts resolves in a couple of requests instead of dozens.
+  useEffect(() => {
+    let cancelled = false;
+    const pending = profiles.filter((p) => !fetchedMarkets.current.has(profileKey(p)));
+    if (pending.length === 0) return;
+
+    pending.forEach((p) => fetchedMarkets.current.add(profileKey(p)));
+    (async () => {
+      // Group by chain so each batch hits the right per-provider slug.
+      const byChain = new Map<string, TokenProfile[]>();
+      for (const p of pending) {
+        const list = byChain.get(p.chainId) ?? [];
+        list.push(p);
+        byChain.set(p.chainId, list);
+      }
+      for (const [chainId, group] of byChain) {
+        const map = await fetchMarketPairs(
+          group.map((p) => p.tokenAddress),
+          chainId
+        );
+        if (cancelled) return;
+        const keyed: Record<string, MarketPair | null> = {};
+        for (const p of group) keyed[profileKey(p)] = map[p.tokenAddress] ?? null;
+        setMarkets((m) => ({ ...m, ...keyed }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
+
+  // Enrich profiles with real names / symbols / logos (batched, once per token).
+  // Powers both the search index and the richer card/table labels.
+  useEffect(() => {
+    let cancelled = false;
+    const pending = profiles.filter((p) => !fetchedBriefs.current.has(profileKey(p)));
+    if (pending.length === 0) return;
+
+    (async () => {
+      // Group by chain, then batch each chain (up to 30 addresses per call).
+      const byChain = new Map<string, TokenProfile[]>();
+      for (const p of pending) {
+        const list = byChain.get(p.chainId) ?? [];
+        list.push(p);
+        byChain.set(p.chainId, list);
+      }
+      for (const [chainId, group] of byChain) {
+        for (let i = 0; i < group.length; i += 30) {
+          const batch = group.slice(i, i + 30);
+          batch.forEach((p) => fetchedBriefs.current.add(profileKey(p)));
+          const map = await fetchTokenBriefs(
+            batch.map((p) => p.tokenAddress),
+            chainId
+          );
+          if (cancelled) return;
+          const keyed: Record<string, TokenBrief> = {};
+          for (const p of batch) {
+            const brief = map[p.tokenAddress];
+            if (brief) keyed[profileKey(p)] = brief;
+          }
+          setBriefs((prev) => ({ ...prev, ...keyed }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [profiles]);
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return profiles;
+    return profiles.filter((p) => matchesQuery(p, briefs[profileKey(p)], needle));
+  }, [profiles, briefs, query]);
 
   return (
     <div>
@@ -70,58 +224,82 @@ export default function Feed() {
         5&nbsp;seconds.
       </p>
 
-      {profiles.length === 0 && (
+      {profiles.length > 0 && (
+        <FeedToolbar
+          query={query}
+          onQueryChange={setQuery}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          resultCount={filtered.length}
+          totalCount={profiles.length}
+        />
+      )}
+
+      {loading && profiles.length === 0 ? (
+        <FeedSkeleton viewMode={viewMode} />
+      ) : error && profiles.length === 0 ? (
+        <div className="mt-5 rounded-xl border border-line bg-card p-8 text-center">
+          <p className="font-semibold text-ink">Couldn't reach the feed</p>
+          <p className="mt-1 text-sm text-ink-dim">
+            The API may be temporarily unavailable. Please try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true);
+              setRetry((n) => n + 1);
+            }}
+            className="mt-4 rounded-lg border border-line bg-bg-soft px-3 py-1.5 text-sm font-semibold text-ink transition hover:border-accent"
+          >
+            Retry
+          </button>
+        </div>
+      ) : profiles.length === 0 ? (
         <div className="mt-5 rounded-xl border border-line bg-card p-5 text-center text-ink-dim">
           No updates yet. As soon as someone updates their token info, it shows up here.
         </div>
-      )}
-
-      <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {profiles.map((p) => (
-          <Link
-            key={p.tokenAddress}
-            to={`/token/${p.tokenAddress}`}
-            className={`overflow-hidden rounded-xl border border-line bg-card transition hover:-translate-y-0.5 hover:border-accent ${
-              fresh.has(p.tokenAddress) ? "animate-flash" : ""
-            }`}
+      ) : filtered.length === 0 ? (
+        <div className="mt-5 rounded-xl border border-line bg-card p-8 text-center">
+          <p className="font-semibold text-ink">No matches for “{query.trim()}”</p>
+          <p className="mt-1 text-sm text-ink-dim">
+            Try a token name, symbol, or address.
+          </p>
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="mt-4 rounded-lg border border-line bg-bg-soft px-3 py-1.5 text-sm font-semibold text-ink transition hover:border-accent"
           >
-            <div className="aspect-[3/1] bg-bg-soft">
-              {p.header && (
-                <img src={p.header} alt="" loading="lazy" className="h-full w-full object-cover" />
+            Clear search
+          </button>
+        </div>
+      ) : viewMode === "cards" ? (
+        <div className="mt-5 grid animate-fade-in gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {filtered.map((p) => (
+            <TokenCard
+              key={profileKey(p)}
+              item={toTokenViewItem(
+                p,
+                markets[profileKey(p)],
+                briefs[profileKey(p)],
+                fresh.has(profileKey(p))
               )}
-            </div>
-            <div className="p-3.5">
-              <div className="flex items-center gap-2">
-                {p.icon && (
-                  <img src={p.icon} alt="" loading="lazy" className="h-7 w-7 rounded-full bg-bg-soft object-cover" />
-                )}
-                <span className="font-mono text-sm font-semibold">{shortenAddress(p.tokenAddress)}</span>
-                {fresh.has(p.tokenAddress) && (
-                  <span className="rounded bg-accent px-1.5 py-0.5 text-[10px] font-extrabold tracking-wide text-white">
-                    UPDATED
-                  </span>
-                )}
-                <span className="ml-auto text-xs text-ink-dim">{relTime(p.updatedAt)}</span>
-              </div>
-              {p.description && (
-                <p className="mt-2 line-clamp-2 text-[13px] text-ink-dim">{p.description}</p>
-              )}
-              {p.links.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {p.links.map((l, i) => (
-                    <span
-                      key={i}
-                      className="rounded-full border border-line bg-bg-soft px-2.5 py-0.5 text-xs text-ink-dim"
-                    >
-                      {l.label || l.type || "link"}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          </Link>
-        ))}
-      </div>
+            />
+          ))}
+        </div>
+      ) : (
+        <TokenList
+          list_of_items={filtered.map((p) =>
+            toTokenViewItem(
+              p,
+              markets[profileKey(p)],
+              briefs[profileKey(p)],
+              fresh.has(profileKey(p))
+            )
+          )}
+          showProfileColumns
+          showUpdatedColumn
+        />
+      )}
     </div>
   );
 }

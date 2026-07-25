@@ -4,7 +4,7 @@ import {
   profileUpdateSchema,
   MAX_BANNER_UPLOAD,
   ALLOWED_IMAGE_TYPES,
-  isValidSolanaAddress,
+  isValidAddressForChain,
 } from "../_shared/validation.ts";
 import { processBanner } from "../_shared/images.ts";
 import { serializeProfile, type ProfileRow } from "../_shared/serialize.ts";
@@ -20,7 +20,9 @@ export async function handler(req: Request): Promise<Response> {
 
   const grant = await verifyEditToken(req.headers.get("authorization"));
   if (!grant) return json({ error: "missing or invalid edit token" }, 401);
-  if (!isValidSolanaAddress(grant.tokenAddress)) return json({ error: "invalid token in grant" }, 401);
+  if (!isValidAddressForChain(grant.chainId, grant.tokenAddress)) {
+    return json({ error: "invalid token in grant" }, 401);
+  }
 
   let form: FormData;
   try {
@@ -66,7 +68,7 @@ export async function handler(req: Request): Promise<Response> {
 
   const existingRows = await sql`
     SELECT * FROM token_profiles
-    WHERE chain_id = 'solana' AND token_address = ${grant.tokenAddress} LIMIT 1
+    WHERE chain_id = ${grant.chainId} AND token_address = ${grant.tokenAddress} LIMIT 1
   `;
   const existing = existingRows[0];
 
@@ -93,7 +95,7 @@ export async function handler(req: Request): Promise<Response> {
       INSERT INTO token_profiles
         (chain_id, token_address, description, links, header_image_id, updated_by, updated_by_role)
       VALUES
-        ('solana', ${grant.tokenAddress}, ${payload.description ?? null},
+        (${grant.chainId}, ${grant.tokenAddress}, ${payload.description ?? null},
          ${sql.json(payload.links ?? [])}, ${bannerImageId ?? null},
          ${grant.wallet}, ${grant.role})
       ON CONFLICT (chain_id, token_address) DO UPDATE SET
@@ -109,8 +111,8 @@ export async function handler(req: Request): Promise<Response> {
   }
 
   await sql`
-    INSERT INTO audit_log (token_address, wallet, role, action, detail)
-    VALUES (${grant.tokenAddress}, ${grant.wallet}, ${grant.role},
+    INSERT INTO audit_log (chain_id, token_address, wallet, role, action, detail)
+    VALUES (${grant.chainId}, ${grant.tokenAddress}, ${grant.wallet}, ${grant.role},
             ${existing ? "update" : "create"},
             ${sql.json({
               changed: [

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { PublicKey } from "@solana/web3.js";
+import { chainTypeOf, isValidEvmAddress } from "./chains.ts";
 
 /** Strict base58 Solana address check (throws-safe). */
 export function isValidSolanaAddress(addr: string): boolean {
@@ -13,6 +14,20 @@ export function isValidSolanaAddress(addr: string): boolean {
 }
 
 export const solanaAddressSchema = z.string().refine(isValidSolanaAddress, "invalid Solana address");
+
+/** Validate an address against the format expected by a given chain. */
+export function isValidAddressForChain(chainId: string, addr: string): boolean {
+  return chainTypeOf(chainId) === "evm" ? isValidEvmAddress(addr) : isValidSolanaAddress(addr);
+}
+
+/**
+ * Normalize an address for stable storage/compare. EVM addresses are
+ * case-insensitive, so lowercase them; Solana base58 is case-sensitive and
+ * kept verbatim.
+ */
+export function normalizeAddress(chainId: string, addr: string): string {
+  return chainTypeOf(chainId) === "evm" ? addr.trim().toLowerCase() : addr.trim();
+}
 
 const ALLOWED_LINK_TYPES = ["website", "twitter"] as const;
 

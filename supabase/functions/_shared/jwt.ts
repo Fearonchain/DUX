@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify } from "jose";
 import { env } from "./env.ts";
 import type { QualifyRole } from "./solana.ts";
+import { DEFAULT_CHAIN_ID } from "./chains.ts";
 
 const TOKEN_TTL_SECONDS = 30 * 60;
 
@@ -12,13 +13,19 @@ function secretKey(): Uint8Array {
 
 export interface EditGrant {
   wallet: string;
+  chainId: string;
   tokenAddress: string;
   role: QualifyRole;
 }
 
-/** Issue a short-lived edit token scoped to ONE token mint. */
+/** Issue a short-lived edit token scoped to ONE token on ONE chain. */
 export async function issueEditToken(grant: EditGrant): Promise<string> {
-  return new SignJWT({ wallet: grant.wallet, token: grant.tokenAddress, role: grant.role })
+  return new SignJWT({
+    wallet: grant.wallet,
+    chainId: grant.chainId,
+    token: grant.tokenAddress,
+    role: grant.role,
+  })
     .setProtectedHeader({ alg: "HS256" })
     .setIssuedAt()
     .setIssuer("dux")
@@ -45,6 +52,8 @@ export async function verifyEditToken(bearer: string | null): Promise<EditGrant 
     }
     return {
       wallet: payload.wallet,
+      // Tokens issued before multi-chain support have no chainId → Solana.
+      chainId: typeof payload.chainId === "string" ? payload.chainId : DEFAULT_CHAIN_ID,
       tokenAddress: payload.token,
       role: payload.role as EditGrant["role"],
     };

@@ -1,6 +1,7 @@
 import { getDb } from "../_shared/db.ts";
 import { serializeProfile, type ProfileRow } from "../_shared/serialize.ts";
-import { isValidSolanaAddress } from "../_shared/validation.ts";
+import { isValidAddressForChain } from "../_shared/validation.ts";
+import { isSupportedChain } from "../_shared/chains.ts";
 import { corsPreflight, json, normalizedPath, CORS_HEADERS } from "../_shared/http.ts";
 
 const CACHE = { "Cache-Control": "public, max-age=15, s-maxage=15" };
@@ -27,7 +28,7 @@ async function recentUpdates(): Promise<Response> {
 }
 
 async function single(chainId: string, tokenAddress: string): Promise<Response> {
-  if (chainId !== "solana" || !isValidSolanaAddress(tokenAddress)) {
+  if (!isSupportedChain(chainId) || !isValidAddressForChain(chainId, tokenAddress)) {
     return json({ error: "not found" }, 404, CACHE);
   }
   const sql = getDb();

@@ -1,1 +1,13 @@
-project_id = "pwvvexyylkjnujkcjrpu"
+project_id = "rlwblhaxshflftokwduw"
+
+# The read API and the auth/profile endpoints implement their own logic
+# (public reads, single-use nonces, custom scoped JWTs), so the Supabase
+# gateway must NOT require its own JWT. This keeps the public API key-less.
+[functions.token-profiles]
+verify_jwt = false
+
+[functions.auth]
+verify_jwt = false
+
+[functions.profile]
+verify_jwt = false
